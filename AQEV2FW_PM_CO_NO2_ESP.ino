@@ -21,10 +21,10 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP280.h>
 
+#include <PMSX003.h>
 #include <LMP91000.h>
 
 #include <MCP342x.h>
-#include <PMSX003.h>
 
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
@@ -74,6 +74,28 @@ SdFat SD;
 #define B_PM10P0_SAMPLE_BUFFER    (6)
 #define NO2_SAMPLE_BUFFER         (7)
 #define NUM_SAMPLE_BUFFERS        (8)
+SoftwareSerial pmsx003Serial_2(A7, A5);  // RX, TX
+SoftwareSerial pmsx003Serial_1(A4, A5);  // RX, TX
+PMSX003 pmsx003_1(&pmsx003Serial_1);
+PMSX003 pmsx003_2(&pmsx003Serial_2);
+float pm1p0_ugpm3 = 0.0f;
+float pm2p5_ugpm3 = 0.0f;
+float pm10p0_ugpm3 = 0.0f;
+float instant_pm1p0_ugpm3_a = 0.0f;
+float instant_pm2p5_ugpm3_a = 0.0f;
+float instant_pm10p0_ugpm3_a = 0.0f;
+float instant_pm1p0_ugpm3_b = 0.0f;
+float instant_pm2p5_ugpm3_b = 0.0f;
+float instant_pm10p0_ugpm3_b = 0.0f;
+boolean particulate_ready = false;
+void set_pm1p0_offset(char * arg);
+void set_pm2p5_offset(char * arg);
+void set_pm10p0_offset(char * arg);
+void test_pm(char * arg);
+const char cmd_string_pm1p0_off[] PROGMEM   = "pm1p0_off  ";
+const char cmd_string_pm2p5_off[] PROGMEM   = "pm2p5_off  ";
+const char cmd_string_pm10p0_off[] PROGMEM  = "pm10p0_off ";
+const char cmd_string_testpm[] PROGMEM      = "testpm     ";
 LMP91000 lmp91000;
 float no2_ppb = 0.0f;
 float instant_no2_v = 0.0f;
@@ -113,26 +135,6 @@ void collectCO(void);
 boolean publishCO(void);
 float convert_co_sensitivity_to_slope(float sensitivity);
 MCP342x adc;
-SoftwareSerial pmsx003Serial_2(A7, A5);  // RX, TX
-SoftwareSerial pmsx003Serial_1(A4, A5);  // RX, TX
-PMSX003 pmsx003_1(&pmsx003Serial_1);
-PMSX003 pmsx003_2(&pmsx003Serial_2);
-float pm1p0_ugpm3 = 0.0f;
-float pm2p5_ugpm3 = 0.0f;
-float pm10p0_ugpm3 = 0.0f;
-float instant_pm1p0_ugpm3_a = 0.0f;
-float instant_pm2p5_ugpm3_a = 0.0f;
-float instant_pm10p0_ugpm3_a = 0.0f;
-float instant_pm1p0_ugpm3_b = 0.0f;
-float instant_pm2p5_ugpm3_b = 0.0f;
-float instant_pm10p0_ugpm3_b = 0.0f;
-boolean particulate_ready = false;
-void set_pm1p0_offset(char * arg);
-void set_pm2p5_offset(char * arg);
-void set_pm10p0_offset(char * arg);
-const char cmd_string_pm1p0_off[] PROGMEM   = "pm1p0_off  ";
-const char cmd_string_pm2p5_off[] PROGMEM   = "pm2p5_off  ";
-const char cmd_string_pm10p0_off[] PROGMEM  = "pm10p0_off ";
 
 TinyGPS gps;
 SoftwareSerial gpsSerial(18, 18); // RX, TX
@@ -534,6 +536,10 @@ PGM_P const commands[] PROGMEM = {
     cmd_string_usr_loc_en,
 
 
+    cmd_string_pm1p0_off,
+    cmd_string_pm2p5_off,
+    cmd_string_pm10p0_off,
+    cmd_string_testpm,
     cmd_string_no2_sen,
     cmd_string_no2_slope,
     cmd_string_no2_off,
@@ -544,9 +550,6 @@ PGM_P const commands[] PROGMEM = {
     cmd_string_co_off,
     cmd_string_co_blv,
     cmd_string_co_negz,
-    cmd_string_pm1p0_off,
-    cmd_string_pm2p5_off,
-    cmd_string_pm10p0_off,
 
     cmd_string_null
 };
@@ -593,6 +596,10 @@ void (*command_functions[])(char * arg) = {
     set_user_location_enable,
 
 
+    set_pm1p0_offset,
+    set_pm2p5_offset,
+    set_pm10p0_offset,
+    test_pm,
     set_no2_sensitivity,
     set_no2_slope,
     set_no2_offset,
@@ -603,9 +610,6 @@ void (*command_functions[])(char * arg) = {
     set_co_offset,
     co_baseline_voltage_characterization_command,
     co_negz,
-    set_pm1p0_offset,
-    set_pm2p5_offset,
-    set_pm10p0_offset,
 
     0
 };
@@ -794,6 +798,12 @@ void setup() {
                     Serial.print(countdown_value_display);
                     Serial.print(F("..."));
                 }
+
+                if(countdown_value_display == 10) {
+                    // do reset on error, don't display text on LCD
+                    collectParticulate(true, false);
+                }
+
 
                 updateCornerDot();
 
@@ -1158,11 +1168,16 @@ void updateDisplayedSensors() {
                 updateLCD("XXX", 4, 1, 4, false);
             }
 
-            if(co_ready || (sample_buffer_idx > 0)) {
-                updateLCD(co_ppm, 13, 1, 3, false);
+            if(init_co_afe_ok && init_co_adc_ok) {
+                if(co_ready || (sample_buffer_idx > 0)) {
+                    updateLCD(co_ppm, 13, 1, 3, false);
+                }
+                else {
+                    updateLCD("---", 13, 1, 3, false);
+                }
             }
             else {
-                updateLCD("---", 13, 1, 3, false);
+                updateLCD("XXX", 13, 1, 3, false);
             }
             break;
         }
@@ -1217,9 +1232,9 @@ void loop() {
         collectTemperature();
         collectHumidity();
         collectPressure();
+        collectParticulate();
         collectNO2();
         collectCO();
-        collectParticulate();
         advanceSampleBufferIndex();
     }
 
@@ -1430,7 +1445,13 @@ void initializeHardware(void) {
     }
 
 
-    // Initialize NO2 Sensor
+    // put the same thing in for the particulate sensors
+    pinMode(A4, INPUT_PULLUP);
+    pinMode(A7, INPUT_PULLUP);
+    pinMode(A5, OUTPUT);
+    pmsx003_1.begin();
+    pmsx003_2.begin();
+// Initialize NO2 Sensor
     Serial.print(F("Info: NO2 Sensor AFE Initialization..."));
     selectSlot2();
     if (lmp91000.configure(
@@ -1479,13 +1500,6 @@ void initializeHardware(void) {
         Serial.println(F("Failed."));
         init_co_adc_ok = false;
     }
-    // put the same thing in for the particulate sensors
-    pinMode(A4, INPUT_PULLUP);
-    pinMode(A7, INPUT_PULLUP);
-    pinMode(A5, OUTPUT);
-    pmsx003_1.begin();
-    pmsx003_2.begin();
-    collectParticulate();
 
     Serial.print(F("Info: BMP280 Initialization..."));
     if (!bme.begin()) {
@@ -1670,6 +1684,20 @@ void initializeNewConfigSettings(void) {
         snprintf(command_buf, 127, "no2_sen %8.4f\r", sensitivity);
         configInject(command_buf);
         configInject("backup no2\r");
+    }
+
+    sensitivity = eeprom_read_float((const float *) EEPROM_CO_SENSITIVITY);
+    calculated_slope = convert_co_sensitivity_to_slope(sensitivity);
+    stored_slope = eeprom_read_float((const float *) EEPROM_CO_CAL_SLOPE);
+    if(calculated_slope != stored_slope) {
+        if(!in_config_mode) {
+            configInject("aqe\r");
+            in_config_mode = true;
+        }
+        memset(command_buf, 0, 128);
+        snprintf(command_buf, 127, "co_sen %8.4f\r", sensitivity);
+        configInject(command_buf);
+        configInject("backup co\r");
     }
 
     if(in_config_mode) {
@@ -2302,6 +2330,15 @@ void print_eeprom_value(char * arg) {
         print_eeprom_ipmode();
     }
 
+    else if(strncmp(arg, "pm1p0_off", 9) == 0) {
+        print_eeprom_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
+    }
+    else if(strncmp(arg, "pm2p5_off", 9) == 0) {
+        print_eeprom_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
+    }
+    else if(strncmp(arg, "pm10p0_off", 9) == 0) {
+        print_eeprom_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
+    }
     else if (strncmp(arg, "no2_sen", 7) == 0) {
         print_eeprom_float((const float *) EEPROM_NO2_SENSITIVITY);
     }
@@ -2325,15 +2362,6 @@ void print_eeprom_value(char * arg) {
     }
     else if (strncmp(arg, "co_negz", 7) == 0) {
         Serial.println(eeprom_read_byte((const uint8_t *) EEPROM_CO_ZERO_NEGATIVE_RESULTS));
-    }
-    else if(strncmp(arg, "pm1p0_off", 9) == 0) {
-        print_eeprom_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
-    }
-    else if(strncmp(arg, "pm2p5_off", 9) == 0) {
-        print_eeprom_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
-    }
-    else if(strncmp(arg, "pm10p0_off", 9) == 0) {
-        print_eeprom_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
     }
 
     else if (strncmp(arg, "temp_off", 8) == 0) {
@@ -2500,6 +2528,12 @@ void print_eeprom_value(char * arg) {
         Serial.println(F(" | Sensor Calibrations:                                        |"));
         Serial.println(F(" +-------------------------------------------------------------+"));
 
+        print_label_with_star_if_not_backed_up("PM1.0 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
+        print_eeprom_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
+        print_label_with_star_if_not_backed_up("PM2.5 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
+        print_eeprom_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
+        print_label_with_star_if_not_backed_up("PM10.0 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
+        print_eeprom_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
         print_label_with_star_if_not_backed_up("NO2 Sensitivity [nA/ppm]: ", BACKUP_STATUS_NO2_CALIBRATION_BIT);
         print_eeprom_float((const float *) EEPROM_NO2_SENSITIVITY);
         print_label_with_star_if_not_backed_up("NO2 Slope [ppb/V]: ", BACKUP_STATUS_NO2_CALIBRATION_BIT);
@@ -2534,12 +2568,6 @@ void print_eeprom_value(char * arg) {
         Serial.print(F("    "));
         Serial.println(F("CO Baseline Voltage Characterization:"));
         print_baseline_voltage_characterization(EEPROM_CO_BASELINE_VOLTAGE_TABLE);
-        print_label_with_star_if_not_backed_up("PM1.0 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
-        print_eeprom_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
-        print_label_with_star_if_not_backed_up("PM2.5 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
-        print_eeprom_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
-        print_label_with_star_if_not_backed_up("PM10.0 Offset [ug/m^3]: ", BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
-        print_eeprom_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
 
         char temp_reporting_offset_label[64] = {0};
         char temperature_units = (char) eeprom_read_byte((uint8_t *) EEPROM_TEMPERATURE_UNITS);
@@ -2626,11 +2654,11 @@ void restore(char * arg) {
         configInject("mqttsuffix enable\r");
 
         configInject("sampling 5, 600, 60\r"); // sample every 5 seconds, average over 10 minutes, report every minute
+        configInject("restore particulate\r");
         configInject("restore no2\r");
         configInject("no2_negz 1\r");
         configInject("restore co\r");
         configInject("co_negz 1\r");
-        configInject("restore particulate\r");
 
         configInject("ntpsrv disable\r");
         configInject("ntpsrv 0.airqualityegg.pool.ntp.org\r");
@@ -2722,6 +2750,20 @@ void restore(char * arg) {
         eeprom_write_block(tmp, (void *) EEPROM_PRIVATE_KEY, 32);
     }
 
+    else if (strncmp("particulate", arg, 11) == 0) {
+        if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT)) {
+            Serial.println(F("Error: Particulate calibration must be backed up  "));
+            Serial.println(F("       prior to executing a 'restore'."));
+            return;
+        }
+
+        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM1P0_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_PM1P0_CAL_OFFSET, 4);
+        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM2P5_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_PM2P5_CAL_OFFSET, 4);
+        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM10P0_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_PM10P0_CAL_OFFSET, 4);
+    }
     else if (strncmp("no2", arg, 3) == 0) {
         if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_NO2_CALIBRATION_BIT)) {
             Serial.println(F("Error: NO2 calibration must be backed up  "));
@@ -2749,20 +2791,6 @@ void restore(char * arg) {
         eeprom_write_block(tmp, (void *) EEPROM_CO_CAL_SLOPE, 4);
         eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_CO_CAL_OFFSET, 4);
         eeprom_write_block(tmp, (void *) EEPROM_CO_CAL_OFFSET, 4);
-    }
-    else if (strncmp("particulate", arg, 11) == 0) {
-        if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT)) {
-            Serial.println(F("Error: Particulate calibration must be backed up  "));
-            Serial.println(F("       prior to executing a 'restore'."));
-            return;
-        }
-
-        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM1P0_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_PM1P0_CAL_OFFSET, 4);
-        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM2P5_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_PM2P5_CAL_OFFSET, 4);
-        eeprom_read_block(tmp, (const void *) EEPROM_BACKUP_PM10P0_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_PM10P0_CAL_OFFSET, 4);
     }
 
     else if (strncmp("temp_off", arg, 8) == 0) {
@@ -2924,7 +2952,7 @@ void sampling_command(char * arg) {
         case 0:
             l_sample_interval = (uint16_t) strtoul(token, NULL, 10);
             if(l_sample_interval < 3) {
-                Serial.print(F("Error: Sampling interval must be greater than 0 [was "));
+                Serial.print(F("Error: Sampling interval must be at least 3 [was "));
                 Serial.print(l_sample_interval);
                 Serial.print(F("]"));
                 Serial.println();
@@ -3498,9 +3526,17 @@ void download_one_file(char * filename) {
         File dataFile = SD.open(filename, FILE_READ);
         char last_char_read = NULL;
         if (dataFile) {
+            uint32_t byteCounter = 0;
             while (dataFile.available()) {
                 last_char_read = dataFile.read();
-                Serial.write(last_char_read);
+                byteCounter++;
+                if(isprint(last_char_read) || isspace(last_char_read)) {
+                    Serial.write(last_char_read);
+                    byteCounter = 0;
+                }
+                if(byteCounter > 1200) {
+                    break;
+                }
             }
             dataFile.close();
         }
@@ -3556,21 +3592,24 @@ void advanceByOneHour(uint8_t src_array[4]) {
 
 // does the behavior of executing the one_file_function on a single file
 // or on each file in a range of files
-void fileop_command_delegate(char * arg, void (*one_file_function)(char *)) {
-    char * first_arg = NULL;
-    char * second_arg = NULL;
+void fileop_command_delegate(char *arg, void (*one_file_function)(char *))
+{
+    char *first_arg = NULL;
+    char *second_arg = NULL;
 
     trim_string(arg);
 
     first_arg = strtok(arg, " ");
     second_arg = strtok(NULL, " ");
 
-    if(second_arg == NULL) {
+    if (second_arg == NULL)
+    {
         one_file_function(first_arg);
     }
-    else {
-        uint8_t cur_date[4] = {0,0,0,0};
-        uint8_t end_date[4] = {0,0,0,0};
+    else
+    {
+        uint8_t cur_date[4] = {0, 0, 0, 0};
+        uint8_t end_date[4] = {0, 0, 0, 0};
         crack_datetime_filename(first_arg, cur_date);
         crack_datetime_filename(second_arg, end_date);
 
@@ -3579,27 +3618,37 @@ void fileop_command_delegate(char * arg, void (*one_file_function)(char *)) {
         boolean finished_last_file = false;
         unsigned long previousMillis = millis();
         const long interval = 1000;
-        while(!finished_last_file) {
+        while (!finished_last_file)
+        {
             unsigned long currentMillis = millis();
-            if(currentMillis - previousMillis >= interval) {
+            if (currentMillis - previousMillis >= interval)
+            {
                 previousMillis = currentMillis;
                 petWatchdog();
             }
             memset(cur_date_filename, 0, 16);
             make_datetime_filename(cur_date, cur_date_filename, 15);
-            one_file_function(cur_date_filename);
-            if(memcmp(cur_date, end_date, 4) == 0) {
+
+            if (SD.exists(cur_date_filename))
+            {
+                one_file_function(cur_date_filename);
+            }
+
+            if (memcmp(cur_date, end_date, 4) == 0)
+            {
                 finished_last_file = true;
             }
-            else {
+            else
+            {
                 advanceByOneHour(cur_date);
             }
         }
-        delayForWatchdog();
     }
+    delayForWatchdog();
 }
 
-void download_command(char * arg) {
+void download_command(char *arg)
+{
     Serial.println(header_row);
     fileop_command_delegate(arg, download_one_file);
     Serial.println("Info: Done downloading.");
@@ -3950,6 +3999,19 @@ void backup(char * arg) {
         }
     }
 
+    else if (strncmp("particulate", arg, 11) == 0) {
+        eeprom_read_block(tmp, (const void *) EEPROM_PM1P0_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM1P0_CAL_OFFSET, 4);
+        eeprom_read_block(tmp, (const void *) EEPROM_PM2P5_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM2P5_CAL_OFFSET, 4);
+        eeprom_read_block(tmp, (const void *) EEPROM_PM10P0_CAL_OFFSET, 4);
+        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM10P0_CAL_OFFSET, 4);
+
+        if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT)) {
+            CLEAR_BIT(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
+            eeprom_write_word((uint16_t *) EEPROM_BACKUP_CHECK, backup_check);
+        }
+    }
     else if (strncmp("no2", arg, 3) == 0) {
         eeprom_read_block(tmp, (const void *) EEPROM_NO2_SENSITIVITY, 4);
         eeprom_write_block(tmp, (void *) EEPROM_BACKUP_NO2_SENSITIVITY, 4);
@@ -3973,19 +4035,6 @@ void backup(char * arg) {
 
         if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_CO_CALIBRATION_BIT)) {
             CLEAR_BIT(backup_check, BACKUP_STATUS_CO_CALIBRATION_BIT);
-            eeprom_write_word((uint16_t *) EEPROM_BACKUP_CHECK, backup_check);
-        }
-    }
-    else if (strncmp("particulate", arg, 11) == 0) {
-        eeprom_read_block(tmp, (const void *) EEPROM_PM1P0_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM1P0_CAL_OFFSET, 4);
-        eeprom_read_block(tmp, (const void *) EEPROM_PM2P5_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM2P5_CAL_OFFSET, 4);
-        eeprom_read_block(tmp, (const void *) EEPROM_PM10P0_CAL_OFFSET, 4);
-        eeprom_write_block(tmp, (void *) EEPROM_BACKUP_PM10P0_CAL_OFFSET, 4);
-
-        if (!BIT_IS_CLEARED(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT)) {
-            CLEAR_BIT(backup_check, BACKUP_STATUS_PARTICULATE_CALIBRATION_BIT);
             eeprom_write_word((uint16_t *) EEPROM_BACKUP_CHECK, backup_check);
         }
     }
@@ -4022,9 +4071,9 @@ void backup(char * arg) {
         configInject("backup mqttpwd\r");
         configInject("backup key\r");
 
+        configInject("backup particulate\r");
         configInject("backup no2\r");
         configInject("backup co\r");
-        configInject("backup particulate\r");
 
         configInject("backup temp\r");
         configInject("backup hum\r");
@@ -4186,6 +4235,226 @@ void resetSensors() {
 
     delay(1000);
     watchdogForceReset();
+}
+void set_pm1p0_offset(char * arg) {
+    set_float_param(arg, (float *) EEPROM_PM1P0_CAL_OFFSET, 0);
+}
+
+void set_pm2p5_offset(char * arg) {
+    set_float_param(arg, (float *) EEPROM_PM2P5_CAL_OFFSET, 0);
+}
+
+void set_pm10p0_offset(char * arg) {
+    set_float_param(arg, (float *) EEPROM_PM10P0_CAL_OFFSET, 0);
+}
+
+void test_pm(char * arg) {
+    char sen = *arg;
+    if(sen == 'a' || sen == 'A') {
+        if(!pmsx003_1.getSample(&instant_pm1p0_ugpm3_a, &instant_pm2p5_ugpm3_a, &instant_pm10p0_ugpm3_a)) {
+            Serial.println(F("PM Sensor A test failed"));
+        } else {
+            Serial.println(F("PM Sensor A test passed"));
+            Serial.print(F("PM1.0 = "));
+            Serial.println(instant_pm1p0_ugpm3_a, 2);
+            Serial.print(F("PM2.5 = "));
+            Serial.println(instant_pm2p5_ugpm3_a, 2);
+            Serial.print(F(" PM10 = "));
+            Serial.println(instant_pm10p0_ugpm3_a, 2);
+        }
+    } else if(sen == 'b' || sen == 'B') {
+        if(!pmsx003_2.getSample(&instant_pm1p0_ugpm3_b, &instant_pm2p5_ugpm3_b, &instant_pm10p0_ugpm3_b)) {
+            Serial.println(F("PM Sensor B test failed"));
+        } else {
+            Serial.println(F("PM Sensor B test passed"));
+            Serial.print(F("PM1.0 = "));
+            Serial.println(instant_pm1p0_ugpm3_b, 2);
+            Serial.print(F("PM2.5 = "));
+            Serial.println(instant_pm2p5_ugpm3_b, 2);
+            Serial.print(F(" PM10 = "));
+            Serial.println(instant_pm10p0_ugpm3_b, 2);
+        }
+    } else {
+        Serial.print(F("Error: Expected argument of 'a' or 'b', but got '"));
+        Serial.print(sen);
+        Serial.println("'");
+    }
+}
+
+uint8_t collectParticulate(void) {
+    return collectParticulate(true, true);
+}
+
+uint8_t collectParticulate(boolean force_reset_on_failure, boolean change_lcd_on_reset) {
+    //Serial.print("Particulate:");
+    uint8_t num_failed_sensors = 0;
+    boolean retA = true; // assume success
+    boolean retB = true; // assume success
+    if(!pmsx003_1.getSample(&instant_pm1p0_ugpm3_a, &instant_pm2p5_ugpm3_a, &instant_pm10p0_ugpm3_a)) {
+        Serial.println(F("\nError: Failed to communicate with Particulate sensor A, restarting"));
+        Serial.flush();
+        if(force_reset_on_failure) {
+            watchdogForceReset(change_lcd_on_reset);
+        }
+        retA = false;
+        num_failed_sensors++;
+    }
+
+    if(!pmsx003_2.getSample(&instant_pm1p0_ugpm3_b, &instant_pm2p5_ugpm3_b, &instant_pm10p0_ugpm3_b)) {
+        Serial.println(F("\nError: Failed to communicate with Particulate sensor B, restarting"));
+        Serial.flush();
+        if(force_reset_on_failure) {
+            watchdogForceReset(change_lcd_on_reset);
+        }
+        retB = false;
+        num_failed_sensors++;
+    }
+
+    if(retA) {
+        addSample(A_PM1P0_SAMPLE_BUFFER, instant_pm1p0_ugpm3_a);
+        addSample(A_PM2P5_SAMPLE_BUFFER, instant_pm2p5_ugpm3_a);
+        addSample(A_PM10P0_SAMPLE_BUFFER, instant_pm10p0_ugpm3_a);
+    }
+
+    if(retB) {
+        addSample(B_PM1P0_SAMPLE_BUFFER, instant_pm1p0_ugpm3_b);
+        addSample(B_PM2P5_SAMPLE_BUFFER, instant_pm2p5_ugpm3_b);
+        addSample(B_PM10P0_SAMPLE_BUFFER, instant_pm10p0_ugpm3_b);
+    }
+
+    if(sample_buffer_idx == (sample_buffer_depth - 1)) {
+        particulate_ready = true;
+    }
+
+    //Serial.println();
+    return num_failed_sensors;
+}
+
+void pm1p0_convert_to_ugpm3(float average, float * temperature_compensated_value) {
+    static boolean first_access = true;
+    static float pm1p0_zero_ugpm3 = 0.0f;
+    if(first_access) {
+        pm1p0_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
+        int32_t as_long = *((int32_t * ) (&pm1p0_zero_ugpm3));
+        if(as_long == -1) {
+            pm1p0_zero_ugpm3 = 0;
+        }
+        first_access = false;
+    }
+
+    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
+    // TODO: apply compensation formula using temperature dependant parameters here
+
+    *temperature_compensated_value = average - pm1p0_zero_ugpm3;
+    if(*temperature_compensated_value <= 0.0f) {
+        *temperature_compensated_value = 0.0f;
+    }
+}
+
+void pm2p5_convert_to_ugpm3(float average, float * temperature_compensated_value) {
+    static boolean first_access = true;
+    static float pm2p5_zero_ugpm3 = 0.0f;
+    if(first_access) {
+        pm2p5_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
+        int32_t as_long = *((int32_t * ) (&pm2p5_zero_ugpm3));
+        if(as_long == -1) {
+            pm2p5_zero_ugpm3 = 0;
+        }
+        first_access = false;
+    }
+
+    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
+    // TODO: apply compensation formula using temperature dependant parameters here
+
+    *temperature_compensated_value = average - pm2p5_zero_ugpm3;
+    if(*temperature_compensated_value <= 0.0f) {
+        *temperature_compensated_value = 0.0f;
+    }
+}
+
+void pm10p0_convert_to_ugpm3(float average, float * temperature_compensated_value) {
+    static boolean first_access = true;
+    static float pm10p0_zero_ugpm3 = 0.0f;
+    if(first_access) {
+        pm10p0_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
+        int32_t as_long = *((int32_t * ) (&pm10p0_zero_ugpm3));
+        if(as_long == -1) {
+            pm10p0_zero_ugpm3 = 0;
+        }
+        first_access = false;
+    }
+
+    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
+    // TODO: apply compensation formula using temperature dependant parameters here
+
+    *temperature_compensated_value = average - pm10p0_zero_ugpm3;
+    if(*temperature_compensated_value <= 0.0f) {
+        *temperature_compensated_value = 0.0f;
+    }
+}
+
+boolean publishParticulate() {
+    clearTempBuffers();
+    uint16_t num_samples = particulate_ready ? sample_buffer_depth : sample_buffer_idx;
+    float pm1p0_compensated_value = 0.0f;
+    float pm2p5_compensated_value = 0.0f;
+    float pm10p0_compensated_value = 0.0f;
+
+    float pm1p0_moving_average = calculateAverage(&(sample_buffer[A_PM1P0_SAMPLE_BUFFER][0]), num_samples);
+    float pm2p5_moving_average = calculateAverage(&(sample_buffer[A_PM2P5_SAMPLE_BUFFER][0]), num_samples);
+    float pm10p0_moving_average = calculateAverage(&(sample_buffer[A_PM10P0_SAMPLE_BUFFER][0]), num_samples);
+    pm1p0_convert_to_ugpm3(pm1p0_moving_average, &pm1p0_compensated_value);
+    pm2p5_convert_to_ugpm3(pm2p5_moving_average, &pm2p5_compensated_value);
+    pm10p0_convert_to_ugpm3(pm10p0_moving_average, &pm10p0_compensated_value);
+
+    // hold on to these compensated averages
+    pm1p0_ugpm3 = pm1p0_compensated_value;
+    pm2p5_ugpm3 = pm2p5_compensated_value;
+    pm10p0_ugpm3 = pm10p0_compensated_value;
+
+    snprintf(scratch, SCRATCH_BUFFER_SIZE-1,
+             "{"
+             "\"serial-number\":\"%s\","
+             "\"converted-units\":\"ug/m^3\","
+             "\"sensor-part-number\":\"PMS5003\",",
+             mqtt_client_id);
+
+    appendAsJSON(scratch, "pm1p0_a", pm1p0_compensated_value, true);
+    appendAsJSON(scratch, "pm2p5_a", pm2p5_compensated_value, true);
+    appendAsJSON(scratch, "pm10p0_a", pm10p0_compensated_value, true);
+
+    pm1p0_moving_average = calculateAverage(&(sample_buffer[B_PM1P0_SAMPLE_BUFFER][0]), num_samples);
+    pm2p5_moving_average = calculateAverage(&(sample_buffer[B_PM2P5_SAMPLE_BUFFER][0]), num_samples);
+    pm10p0_moving_average = calculateAverage(&(sample_buffer[B_PM10P0_SAMPLE_BUFFER][0]), num_samples);
+    pm1p0_convert_to_ugpm3(pm1p0_moving_average, &pm1p0_compensated_value);
+    pm2p5_convert_to_ugpm3(pm2p5_moving_average, &pm2p5_compensated_value);
+    pm10p0_convert_to_ugpm3(pm10p0_moving_average, &pm10p0_compensated_value);
+
+    appendAsJSON(scratch, "pm1p0_b", pm1p0_compensated_value, true);
+    appendAsJSON(scratch, "pm2p5_b", pm2p5_compensated_value, true);
+    appendAsJSON(scratch, "pm10p0_b", pm10p0_compensated_value, true);
+
+    // the displayed value is the combined average
+    pm1p0_ugpm3 = (pm1p0_ugpm3 + pm1p0_compensated_value) / 2;
+    pm2p5_ugpm3 = (pm2p5_ugpm3 + pm2p5_compensated_value) / 2;
+    pm10p0_ugpm3 = (pm10p0_ugpm3 + pm10p0_compensated_value) / 2;
+
+    appendAsJSON(scratch, "pm1p0", pm1p0_ugpm3, true);
+    appendAsJSON(scratch, "pm2p5", pm2p5_ugpm3, true);
+    appendAsJSON(scratch, "pm10p0", pm10p0_ugpm3, false);
+
+    strcat(scratch, gps_mqtt_string);
+    strcat(scratch, "}");
+
+    replace_character(scratch, '\'', '\"'); // replace single quotes with double quotes
+
+    strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
+    strcat(MQTT_TOPIC_STRING, "particulate");
+    if(mqtt_suffix_enabled) {
+        strcat(MQTT_TOPIC_STRING, "/");
+        strcat(MQTT_TOPIC_STRING, mqtt_client_id);
+    }
+    return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 void no2_baseline_voltage_characterization_command(char * arg) {
     baseline_voltage_characterization_command(arg, EEPROM_NO2_BASELINE_VOLTAGE_TABLE);
@@ -4873,173 +5142,6 @@ float pressure_scale_factor(void) {
     }
 
     return ret;
-}
-void set_pm1p0_offset(char * arg) {
-    set_float_param(arg, (float *) EEPROM_PM1P0_CAL_OFFSET, 0);
-}
-
-void set_pm2p5_offset(char * arg) {
-    set_float_param(arg, (float *) EEPROM_PM2P5_CAL_OFFSET, 0);
-}
-
-void set_pm10p0_offset(char * arg) {
-    set_float_param(arg, (float *) EEPROM_PM10P0_CAL_OFFSET, 0);
-}
-
-void collectParticulate(void) {
-    //Serial.print("Particulate:");
-
-    if(!pmsx003_1.getSample(&instant_pm1p0_ugpm3_a, &instant_pm2p5_ugpm3_a, &instant_pm10p0_ugpm3_a)) {
-        Serial.println(F("Error: Failed to communicate with Particulate sensor A, restarting"));
-        Serial.flush();
-        watchdogForceReset();
-    }
-
-    if(!pmsx003_2.getSample(&instant_pm1p0_ugpm3_b, &instant_pm2p5_ugpm3_b, &instant_pm10p0_ugpm3_b)) {
-        Serial.println(F("Error: Failed to communicate with Particulate sensor B, restarting"));
-        Serial.flush();
-        watchdogForceReset();
-    }
-
-    addSample(A_PM1P0_SAMPLE_BUFFER, instant_pm1p0_ugpm3_a);
-    addSample(A_PM2P5_SAMPLE_BUFFER, instant_pm2p5_ugpm3_a);
-    addSample(A_PM10P0_SAMPLE_BUFFER, instant_pm10p0_ugpm3_a);
-    addSample(B_PM1P0_SAMPLE_BUFFER, instant_pm1p0_ugpm3_b);
-    addSample(B_PM2P5_SAMPLE_BUFFER, instant_pm2p5_ugpm3_b);
-    addSample(B_PM10P0_SAMPLE_BUFFER, instant_pm10p0_ugpm3_b);
-
-    if(sample_buffer_idx == (sample_buffer_depth - 1)) {
-        particulate_ready = true;
-    }
-
-    //Serial.println();
-}
-
-void pm1p0_convert_to_ugpm3(float average, float * temperature_compensated_value) {
-    static boolean first_access = true;
-    static float pm1p0_zero_ugpm3 = 0.0f;
-    if(first_access) {
-        pm1p0_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM1P0_CAL_OFFSET);
-        int32_t as_long = *((int32_t * ) (&pm1p0_zero_ugpm3));
-        if(as_long == -1) {
-            pm1p0_zero_ugpm3 = 0;
-        }
-        first_access = false;
-    }
-
-    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
-    // TODO: apply compensation formula using temperature dependant parameters here
-
-    *temperature_compensated_value = average - pm1p0_zero_ugpm3;
-    if(*temperature_compensated_value <= 0.0f) {
-        *temperature_compensated_value = 0.0f;
-    }
-}
-
-void pm2p5_convert_to_ugpm3(float average, float * temperature_compensated_value) {
-    static boolean first_access = true;
-    static float pm2p5_zero_ugpm3 = 0.0f;
-    if(first_access) {
-        pm2p5_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM2P5_CAL_OFFSET);
-        int32_t as_long = *((int32_t * ) (&pm2p5_zero_ugpm3));
-        if(as_long == -1) {
-            pm2p5_zero_ugpm3 = 0;
-        }
-        first_access = false;
-    }
-
-    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
-    // TODO: apply compensation formula using temperature dependant parameters here
-
-    *temperature_compensated_value = average - pm2p5_zero_ugpm3;
-    if(*temperature_compensated_value <= 0.0f) {
-        *temperature_compensated_value = 0.0f;
-    }
-}
-
-void pm10p0_convert_to_ugpm3(float average, float * temperature_compensated_value) {
-    static boolean first_access = true;
-    static float pm10p0_zero_ugpm3 = 0.0f;
-    if(first_access) {
-        pm10p0_zero_ugpm3 = eeprom_read_float((const float *) EEPROM_PM10P0_CAL_OFFSET);
-        int32_t as_long = *((int32_t * ) (&pm10p0_zero_ugpm3));
-        if(as_long == -1) {
-            pm10p0_zero_ugpm3 = 0;
-        }
-        first_access = false;
-    }
-
-    // TODO: if we find there are temperature effects to compensate for, calculate parameters for compensation here
-    // TODO: apply compensation formula using temperature dependant parameters here
-
-    *temperature_compensated_value = average - pm10p0_zero_ugpm3;
-    if(*temperature_compensated_value <= 0.0f) {
-        *temperature_compensated_value = 0.0f;
-    }
-}
-
-boolean publishParticulate() {
-    clearTempBuffers();
-    uint16_t num_samples = particulate_ready ? sample_buffer_depth : sample_buffer_idx;
-    float pm1p0_compensated_value = 0.0f;
-    float pm2p5_compensated_value = 0.0f;
-    float pm10p0_compensated_value = 0.0f;
-
-    float pm1p0_moving_average = calculateAverage(&(sample_buffer[A_PM1P0_SAMPLE_BUFFER][0]), num_samples);
-    float pm2p5_moving_average = calculateAverage(&(sample_buffer[A_PM2P5_SAMPLE_BUFFER][0]), num_samples);
-    float pm10p0_moving_average = calculateAverage(&(sample_buffer[A_PM10P0_SAMPLE_BUFFER][0]), num_samples);
-    pm1p0_convert_to_ugpm3(pm1p0_moving_average, &pm1p0_compensated_value);
-    pm2p5_convert_to_ugpm3(pm2p5_moving_average, &pm2p5_compensated_value);
-    pm10p0_convert_to_ugpm3(pm10p0_moving_average, &pm10p0_compensated_value);
-
-    // hold on to these compensated averages
-    pm1p0_ugpm3 = pm1p0_compensated_value;
-    pm2p5_ugpm3 = pm2p5_compensated_value;
-    pm10p0_ugpm3 = pm10p0_compensated_value;
-
-    snprintf(scratch, SCRATCH_BUFFER_SIZE-1,
-             "{"
-             "\"serial-number\":\"%s\","
-             "\"converted-units\":\"ug/m^3\","
-             "\"sensor-part-number\":\"PMS5003\",",
-             mqtt_client_id);
-
-    appendAsJSON(scratch, "pm1p0_a", pm1p0_compensated_value, true);
-    appendAsJSON(scratch, "pm2p5_a", pm2p5_compensated_value, true);
-    appendAsJSON(scratch, "pm10p0_a", pm10p0_compensated_value, true);
-
-    pm1p0_moving_average = calculateAverage(&(sample_buffer[B_PM1P0_SAMPLE_BUFFER][0]), num_samples);
-    pm2p5_moving_average = calculateAverage(&(sample_buffer[B_PM2P5_SAMPLE_BUFFER][0]), num_samples);
-    pm10p0_moving_average = calculateAverage(&(sample_buffer[B_PM10P0_SAMPLE_BUFFER][0]), num_samples);
-    pm1p0_convert_to_ugpm3(pm1p0_moving_average, &pm1p0_compensated_value);
-    pm2p5_convert_to_ugpm3(pm2p5_moving_average, &pm2p5_compensated_value);
-    pm10p0_convert_to_ugpm3(pm10p0_moving_average, &pm10p0_compensated_value);
-
-    appendAsJSON(scratch, "pm1p0_b", pm1p0_compensated_value, true);
-    appendAsJSON(scratch, "pm2p5_b", pm2p5_compensated_value, true);
-    appendAsJSON(scratch, "pm10p0_b", pm10p0_compensated_value, true);
-
-    // the displayed value is the combined average
-    pm1p0_ugpm3 = (pm1p0_ugpm3 + pm1p0_compensated_value) / 2;
-    pm2p5_ugpm3 = (pm2p5_ugpm3 + pm2p5_compensated_value) / 2;
-    pm10p0_ugpm3 = (pm10p0_ugpm3 + pm10p0_compensated_value) / 2;
-
-    appendAsJSON(scratch, "pm1p0", pm1p0_ugpm3, true);
-    appendAsJSON(scratch, "pm2p5", pm2p5_ugpm3, true);
-    appendAsJSON(scratch, "pm10p0", pm10p0_ugpm3, false);
-
-    strcat(scratch, gps_mqtt_string);
-    strcat(scratch, "}");
-
-    replace_character(scratch, '\'', '\"'); // replace single quotes with double quotes
-
-    strcat(MQTT_TOPIC_STRING, MQTT_TOPIC_PREFIX);
-    strcat(MQTT_TOPIC_STRING, "particulate");
-    if(mqtt_suffix_enabled) {
-        strcat(MQTT_TOPIC_STRING, "/");
-        strcat(MQTT_TOPIC_STRING, mqtt_client_id);
-    }
-    return mqttPublish(MQTT_TOPIC_STRING, scratch);
 }
 
 void set_reported_temperature_offset(char * arg) {
@@ -6366,15 +6468,16 @@ void watchdogForceReset(boolean changeLCD) {
     }
 
     tinywdt.force_reset();
-    Serial.println(F("Error: Watchdog Force Restart failed. Manual reset is required."));
-    setLCD_P(PSTR("AUTORESET FAILED"
-                  " RESET REQUIRED "));
-    backlightOn();
-    ERROR_MESSAGE_DELAY();
 
     for(;;) {
-        soft_restart();
         delay(1000);
+        Serial.println(F("Error: Watchdog Force Restart failed. Manual may be required."));
+        soft_restart();
+
+        setLCD_P(PSTR("AUTORESET FAILED"
+                      " RESET REQUIRED "));
+        backlightOn();
+        ERROR_MESSAGE_DELAY();
     }
 }
 
@@ -6428,6 +6531,11 @@ void loop_wifi_mqtt_mode(void) {
                     }
                 }
 
+                if(particulate_ready || (sample_buffer_idx > 0)) {
+                    if(!publishParticulate()) {
+                        Serial.println(F("Error: Failed to publish Particulate."));
+                    }
+                }
                 if(init_no2_afe_ok && init_no2_adc_ok) {
                     if(no2_ready || (sample_buffer_idx > 0)) {
                         if(!publishNO2()) {
@@ -6440,11 +6548,6 @@ void loop_wifi_mqtt_mode(void) {
                         if(!publishCO()) {
                             Serial.println(F("Error: Failed to publish CO."));
                         }
-                    }
-                }
-                if(particulate_ready || (sample_buffer_idx > 0)) {
-                    if(!publishParticulate()) {
-                        Serial.println(F("Error: Failed to publish Particulate."));
                     }
                 }
 
@@ -6679,7 +6782,6 @@ void printCsvDataLine() {
 
     Serial.print(F(","));
     appendToString("," , dataString, &dataStringRemaining);
-
 
 
 
