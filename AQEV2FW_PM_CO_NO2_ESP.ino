@@ -91,11 +91,15 @@ boolean particulate_ready = false;
 void set_pm1p0_offset(char * arg);
 void set_pm2p5_offset(char * arg);
 void set_pm10p0_offset(char * arg);
+void begin_pm(char * arg);
 void test_pm(char * arg);
+void pmsen(char * arg);
 const char cmd_string_pm1p0_off[] PROGMEM   = "pm1p0_off  ";
 const char cmd_string_pm2p5_off[] PROGMEM   = "pm2p5_off  ";
 const char cmd_string_pm10p0_off[] PROGMEM  = "pm10p0_off ";
+const char cmd_string_beginpm[] PROGMEM     = "beginpm    ";
 const char cmd_string_testpm[] PROGMEM      = "testpm     ";
+const char cmd_string_pmsen[] PROGMEM       = "pmsen      ";
 LMP91000 lmp91000;
 float no2_ppb = 0.0f;
 float instant_no2_v = 0.0f;
@@ -539,7 +543,9 @@ PGM_P const commands[] PROGMEM = {
     cmd_string_pm1p0_off,
     cmd_string_pm2p5_off,
     cmd_string_pm10p0_off,
+    cmd_string_beginpm,
     cmd_string_testpm,
+    cmd_string_pmsen,
     cmd_string_no2_sen,
     cmd_string_no2_slope,
     cmd_string_no2_off,
@@ -599,7 +605,9 @@ void (*command_functions[])(char * arg) = {
     set_pm1p0_offset,
     set_pm2p5_offset,
     set_pm10p0_offset,
+    begin_pm,
     test_pm,
+    pmsen,
     set_no2_sensitivity,
     set_no2_slope,
     set_no2_offset,
@@ -1449,8 +1457,17 @@ void initializeHardware(void) {
     pinMode(A4, INPUT_PULLUP);
     pinMode(A7, INPUT_PULLUP);
     pinMode(A5, OUTPUT);
-    pmsx003_1.begin();
-    pmsx003_2.begin();
+    //pmsx003_1.begin();
+    delay(100);
+    const char a[] = "a";
+    const char b[] = "b";
+    begin_pm(a);
+    test_pm(a, true); // silent
+    begin_pm(a);
+    delay(100);
+    begin_pm(b);
+    test_pm(b, true); // silent
+    begin_pm(b);
 // Initialize NO2 Sensor
     Serial.print(F("Info: NO2 Sensor AFE Initialization..."));
     selectSlot2();
@@ -4248,12 +4265,27 @@ void set_pm10p0_offset(char * arg) {
     set_float_param(arg, (float *) EEPROM_PM10P0_CAL_OFFSET, 0);
 }
 
-void test_pm(char * arg) {
+void begin_pm(char * arg) {
+    char sen = *arg;
+    if(sen == 'a' || sen == 'A') {
+        pmsx003_1.begin();
+    } else if(sen == 'b' || sen == 'B') {
+        pmsx003_2.begin();
+    } else {
+        Serial.print(F("Error: Expected argument of 'a' or 'b', but got '"));
+        Serial.print(sen);
+        Serial.println("'");
+    }
+}
+
+void test_pm(char * arg, boolean silent) {
     char sen = *arg;
     if(sen == 'a' || sen == 'A') {
         if(!pmsx003_1.getSample(&instant_pm1p0_ugpm3_a, &instant_pm2p5_ugpm3_a, &instant_pm10p0_ugpm3_a)) {
-            Serial.println(F("PM Sensor A test failed"));
-        } else {
+            if(!silent) {
+                Serial.println(F("PM Sensor A test failed"));
+            }
+        } else if(!silent) {
             Serial.println(F("PM Sensor A test passed"));
             Serial.print(F("PM1.0 = "));
             Serial.println(instant_pm1p0_ugpm3_a, 2);
@@ -4264,8 +4296,10 @@ void test_pm(char * arg) {
         }
     } else if(sen == 'b' || sen == 'B') {
         if(!pmsx003_2.getSample(&instant_pm1p0_ugpm3_b, &instant_pm2p5_ugpm3_b, &instant_pm10p0_ugpm3_b)) {
-            Serial.println(F("PM Sensor B test failed"));
-        } else {
+            if(!silent) {
+                Serial.println(F("PM Sensor B test failed"));
+            }
+        } else if(!silent) {
             Serial.println(F("PM Sensor B test passed"));
             Serial.print(F("PM1.0 = "));
             Serial.println(instant_pm1p0_ugpm3_b, 2);
@@ -4274,9 +4308,25 @@ void test_pm(char * arg) {
             Serial.print(F(" PM10 = "));
             Serial.println(instant_pm10p0_ugpm3_b, 2);
         }
-    } else {
+    } else if(!silent) {
         Serial.print(F("Error: Expected argument of 'a' or 'b', but got '"));
         Serial.print(sen);
+        Serial.println("'");
+    }
+}
+
+void test_pm(char * arg) {
+    test_pm(arg, false);
+}
+
+void pmsen(char * arg) {
+    if(strcmp_P(arg, PSTR("reset")) == 0) {
+        digitalWrite(sensor_enable, LOW);
+        delay(1000);
+        digitalWrite(sensor_enable, HIGH);
+    } else {
+        Serial.print(F("Error: Expected argument of 'reset', but got '"));
+        Serial.print(arg);
         Serial.println("'");
     }
 }
