@@ -29,7 +29,7 @@
 // semantic versioning - see http://semver.org/
 #define AQEV2FW_MAJOR_VERSION 2
 #define AQEV2FW_MINOR_VERSION 2
-#define AQEV2FW_PATCH_VERSION 3
+#define AQEV2FW_PATCH_VERSION 4
 
 #define WLAN_SEC_AUTO (10) // made up to support auto-config of security
 
@@ -1457,17 +1457,22 @@ void initializeHardware(void) {
     pinMode(A4, INPUT_PULLUP);
     pinMode(A7, INPUT_PULLUP);
     pinMode(A5, OUTPUT);
-    //pmsx003_1.begin();
-    delay(100);
-    const char a[] = "a";
-    const char b[] = "b";
-    begin_pm(a);
-    test_pm(a, true); // silent
-    begin_pm(a);
-    delay(100);
-    begin_pm(b);
-    test_pm(b, true); // silent
-    begin_pm(b);
+    delay(20);
+    uint8_t ii = 0;
+    while(!pmsx003_1.begin()) {
+        if(ii == 3) {
+            break;
+        }
+        ii++;
+    };
+    ii = 0;
+    while(!pmsx003_2.begin()) {
+        if(ii == 3) {
+            break;
+        }
+        ii++;
+    }
+
 // Initialize NO2 Sensor
     Serial.print(F("Info: NO2 Sensor AFE Initialization..."));
     selectSlot2();
@@ -6748,8 +6753,8 @@ void printCsvDataLine() {
         pm1p0_convert_to_ugpm3(pm1p0_moving_average, &compensated_value);
         pm1p0_ugpm3 = (pm1p0_ugpm3 + compensated_value) / 2;
 
-        Serial.print(pm1p0_moving_average, 1);
-        appendToString(pm1p0_moving_average, 1, dataString, &dataStringRemaining);
+        Serial.print(pm1p0_ugpm3, 1);
+        appendToString(pm1p0_ugpm3, 1, dataString, &dataStringRemaining);
 
         Serial.print(F(","));
         appendToString("," , dataString, &dataStringRemaining);
@@ -6761,8 +6766,8 @@ void printCsvDataLine() {
         pm2p5_convert_to_ugpm3(pm2p5_moving_average, &compensated_value);
         pm2p5_ugpm3 = (pm2p5_ugpm3 + compensated_value) / 2;
 
-        Serial.print(pm2p5_moving_average, 1);
-        appendToString(pm2p5_moving_average, 1, dataString, &dataStringRemaining);
+        Serial.print(pm2p5_ugpm3, 1);
+        appendToString(pm2p5_ugpm3, 1, dataString, &dataStringRemaining);
 
         Serial.print(F(","));
         appendToString("," , dataString, &dataStringRemaining);
@@ -6774,8 +6779,8 @@ void printCsvDataLine() {
         pm10p0_convert_to_ugpm3(pm10p0_moving_average, &compensated_value);
         pm10p0_ugpm3 = (pm10p0_ugpm3 + compensated_value) / 2;
 
-        Serial.print(pm10p0_moving_average, 1);
-        appendToString(pm10p0_moving_average, 1, dataString, &dataStringRemaining);
+        Serial.print(pm10p0_ugpm3, 1);
+        appendToString(pm10p0_ugpm3, 1, dataString, &dataStringRemaining);
     }
     else {
         Serial.print(F("---"));
